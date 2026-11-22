@@ -117,7 +117,7 @@ fn main() -> Result<()> {
         }
         Cmd::Repack { image, out } => {
             let mut img = BootImage::read(&image)?;
-            img.ramdisk = Ramdisk::decode(&img.ramdisk)?.encode()?;
+            img.ramdisk = Ramdisk::decode(&img.ramdisk)?.encode_of(&img.ramdisk)?;
             write(&out, &img, &img.to_bytes()?)
         }
         Cmd::Boot { kernel, ramdisk, out } => {
@@ -128,6 +128,7 @@ fn main() -> Result<()> {
         Cmd::Recovery { stock, binary, system_init, config, font, mono, mono_license, out } => {
             let size = partition_size(&stock)?;
             let mut img = BootImage::read(&stock)?;
+            let original = img.ramdisk.clone();
             let mut rd = Ramdisk::decode(&img.ramdisk)?;
             // A stock recovery ramdisk has no third-party tree; refuse to build
             // on top of another custom recovery.
@@ -168,7 +169,7 @@ fn main() -> Result<()> {
             let mut props = without(stock_props, &BUILD_VERSION);
             props.extend_from_slice(b"\nro.secure=0\nro.adb.secure=0\nro.debuggable=1\nro.ota.allow_downgrade=true\n");
             rd.replace(paths::PROP_DEFAULT, props)?;
-            img.ramdisk = rd.encode()?;
+            img.ramdisk = rd.encode_of(&original)?;
             let bytes = img.to_bytes()?;
             write(&out, &img, &avb::footed(&bytes, "recovery", size, &Sha256::digest(&bytes))?)
         }
