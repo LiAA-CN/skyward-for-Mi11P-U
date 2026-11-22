@@ -48,6 +48,47 @@ enum Cmd {
         /// phone or a full update package holds it, ending in its AVB footer.
         #[arg(long)]
         stock: PathBuf,
+        /// The size of the partition the image goes into, when `stock` is a
+        /// boot image of a custom ROM's build, which ends in no footer of
+        /// its own. The image is padded to it and the footer written at it.
+        #[arg(long)]
+        partition_size: Option<u64>,
+        /// The name the footer's descriptor gives the partition: `boot`,
+        /// when the image is built on a boot image of a phone that carries
+        /// its recovery in the boot partition, as the Mi 11 Ultra does.
+        #[arg(long, default_value = "recovery")]
+        partition_name: String,
+        /// An image whose kernel the recovery starts with instead of the
+        /// stock one's, for a phone whose system the stock kernel cannot
+        /// read: one the phone maker built for a newer Android than the
+        /// recovery is made on. A custom ROM's kernel beside the stock
+        /// recovery ramdisk keeps the ROM's modules loading, which the
+        /// recovery needs for its screen and touch. The device tree is
+        /// not here: a version 3 or 4 image carries none, the bootloader
+        /// takes it from vendor_boot.
+        #[arg(long)]
+        kernel: Option<PathBuf>,
+        /// An image whose ramdisk the recovery starts with instead of the
+        /// one in `stock`: a kernel taken from another image needs that
+        /// image's kernel but not its ramdisk.
+        #[arg(long)]
+        ramdisk: Option<PathBuf>,
+        /// An image whose header the recovery is written with, instead of
+        /// the stock one's: its addresses and the command line the
+        /// bootloader hands the kernel, which a kernel from that image
+        /// may need.
+        #[arg(long)]
+        header: Option<PathBuf>,
+        /// Build on a recovery of someone else's: `stock` may then hold a
+        /// custom recovery, whose kernel a phone's installed system needs.
+        /// Its ramdisk is not used unless `ramdisk` names one.
+        #[arg(long, default_value_t = false)]
+        allow_foreign: bool,
+        /// Entries of the stock ramdisk to take out first, each a name or
+        /// a prefix ending in `/`: what a previous build of this recovery
+        /// left there, when it is built on an image of itself.
+        #[arg(long = "strip")]
+        strips: Vec<String>,
         /// Skyward built for the device (aarch64-linux-android).
         #[arg(long)]
         binary: PathBuf,
@@ -125,14 +166,47 @@ fn main() -> Result<()> {
             img.kernel = BootImage::read(&kernel)?.kernel;
             write(&out, &img, &img.to_bytes()?)
         }
-        Cmd::Recovery { stock, binary, system_init, config, font, mono, mono_license, out } => {
-            let size = partition_size(&stock)?;
+        Cmd::Recovery { stock, partition_size: given_size, partition_name, kernel, ramdisk, header, allow_foreign, strips, binary, system_init, config, font, mono, mono_license, out } => {
+            let size = match given_size {
+                Some(size) => usize::try_from(size)?,
+                None => partition_size(&stock)?,
+            };
             let mut img = BootImage::read(&stock)?;
-            let original = img.ramdisk.clone();
-            let mut rd = Ramdisk::decode(&img.ramdisk)?;
-            // A stock recovery ramdisk has no third-party tree; refuse to build
-            // on top of another custom recovery.
-            if let Some(e) = rd.entries.iter().find(|e| e.name == "FFiles" || e.name.starts_with("twres")) {
+            if let Some(header) = &header {
+                // The addresses and the command line the bootloader reads:
+                // what a kernel of another build takes for its own.
+                let from = BootImage::read(header)?;
+                img.header = from.header;
+            }
+            if let Some(kernel) = &kernel {
+                // The kernel the hardware needs: the device tree is not
+                // here, a version 3 or 4 image carries none, and the
+                // bootloader takes it from vendor_boot.
+                let from = BootImage::read(kernel)?;
+                img.kernel = from.kernel;
+            }
+            // The ramdisk as it was packed, whose compression the rebuilt
+            // one keeps: a kernel reads the initramfs of the compression
+            // it was built for.
+            let mut strips = strips;
+            let (mut rd, original) = match &ramdisk {
+                Some(from) => {
+                    strips.clear();
+                    let from = BootImage::read(from)?;
+                    (Ramdisk::decode(&from.ramdisk)?, from.ramdisk)
+                }
+                None => (Ramdisk::decode(&img.ramdisk)?, img.ramdisk.clone()),
+            };
+            for prefix in &strips {
+                let taken = rd.entries.iter().filter(|e| e.name.starts_with(prefix.as_str())).count();
+                rd.entries.retain(|e| !e.name.starts_with(prefix.as_str()));
+                println!("stripped {taken} entries under {prefix}");
+            }
+            // A stock recovery ramdisk has no third-party tree; refuse to
+            // build on top of another custom recovery.
+            if !allow_foreign
+                && let Some(e) = rd.entries.iter().find(|e| e.name == "FFiles" || e.name.starts_with("twres"))
+            {
                 anyhow::bail!("{} holds {}, which is not a stock recovery", stock.display(), e.name);
             }
             let read = |p: &PathBuf| std::fs::read(p).with_context(|| format!("read {}", p.display()));
@@ -171,7 +245,7 @@ fn main() -> Result<()> {
             rd.replace(paths::PROP_DEFAULT, props)?;
             img.ramdisk = rd.encode_of(&original)?;
             let bytes = img.to_bytes()?;
-            write(&out, &img, &avb::footed(&bytes, "recovery", size, &Sha256::digest(&bytes))?)
+            write(&out, &img, &avb::footed(&bytes, &partition_name, size, &Sha256::digest(&bytes))?)
         }
         Cmd::Stock { config, out } => {
             let stock = skyward_config::DeviceConfig::load(&config)?.stock.with_context(|| format!("{} names no stock build", config.display()))?;
