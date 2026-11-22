@@ -169,11 +169,13 @@ fn normal_max(max: u32) -> Result<u32> {
         let cell: [u8; 4] = bytes.as_slice().try_into().map_err(|_| anyhow!("{} is not one cell", path.display()))?;
         Ok(u32::from_be_bytes(cell))
     };
-    let (normal, full) = NORMAL_MAX
-        .iter()
-        .find(|(normal, _)| node.join(normal).exists())
-        .with_context(|| format!("panel {name} gives its normal maximum as none of {NORMAL_MAX:?}"))?;
-    let (normal, full) = (cell(normal)?, cell(full)?);
+    let (normal, full) = match NORMAL_MAX.iter().find(|(normal, _)| node.join(normal).exists()) {
+        Some((normal, full)) => (cell(normal)?, cell(full)?),
+        // The panel names no normal maximum, as the Mi 11 Ultra's does
+        // not: the whole range the backlight gives is then normal, which
+        // the stock system's own slider reaches as well.
+        None => return Ok(max),
+    };
     ensure!(normal > 0 && normal <= full, "panel {name}: normal maximum {normal} out of {full}");
     Ok((f64::from(max) * f64::from(normal) / f64::from(full)).round() as u32)
 }

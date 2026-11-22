@@ -7,6 +7,26 @@ use std::path::{Path, PathBuf};
 /// Where the phone's own partitions keep the table.
 pub const FILES: [&str; 2] = ["/vendor/etc/fstab.qcom", "/odm/etc/fstab.qcom"];
 
+/// The tables to read, in the order they are tried: the one whose name
+/// ends in the suffix the bootloader names (`androidboot.fstab_suffix`,
+/// which a GKI phone sets to `default`), then the ones the phones have
+/// kept across the years.
+fn files() -> Vec<String> {
+    let suffix = std::fs::read_to_string("/proc/cmdline")
+        .ok()
+        .and_then(|cmdline| {
+            cmdline.split_whitespace().find_map(|word| word.strip_prefix("androidboot.fstab_suffix=").map(str::to_string))
+        });
+    let mut out = Vec::new();
+    if let Some(suffix) = suffix.filter(|s| !s.is_empty() && *s != *"qcom") {
+        for base in ["/vendor/etc", "/odm/etc"] {
+            out.push(format!("{base}/fstab.{suffix}"));
+        }
+    }
+    out.extend(FILES.iter().map(|f| f.to_string()));
+    out
+}
+
 /// One filesystem the phone knows about.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Entry {
@@ -54,8 +74,8 @@ pub fn entries(text: &str) -> Vec<Entry> {
 /// Every entry of the phone's own table, read from wherever the table is.
 fn table() -> Result<Vec<Entry>> {
     let mut out = Vec::new();
-    for file in FILES {
-        let text = match std::fs::read_to_string(file) {
+    for file in files() {
+        let text = match std::fs::read_to_string(&file) {
             Ok(text) => text,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
             Err(e) => return Err(e).with_context(|| format!("read {file}")),

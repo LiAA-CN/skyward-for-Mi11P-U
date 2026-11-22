@@ -548,8 +548,12 @@ fn bring_up(cfg: &DeviceConfig, slot: skyward_vab::Slot, found: Result<keys::Fou
     // in folders of its own unless told to pass on what it does not find
     // there to ueventd, which looks in the recovery's firmware folders.
     std::fs::write(FIRMWARE_FALLBACK, "1").with_context(|| format!("write 1 to {FIRMWARE_FALLBACK}"))?;
-    if let Some(firmware) = &cfg.firmware {
-        mount_firmware(&firmware.partition)?;
+    if let Some(firmware) = &cfg.firmware
+        && let Err(e) = mount_firmware(&firmware.partition)
+    {
+        // Without it the WLAN's firmware is missing and its chip stays
+        // down; the screen and the touch do not ask for it.
+        skyward_sys::kmsg(&format!("{} not mounted for the firmware: {e:#}", firmware.partition))?;
     }
     for name in &cfg.partitions.mounted {
         let at = skyward_block::fstab::mount(name)?;
