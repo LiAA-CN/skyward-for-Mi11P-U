@@ -740,7 +740,14 @@ fn start_supplicant(cfg: &Config, libraries: Option<&Path>) -> Result<Child> {
         .current_dir("/")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr({
+            // The supplicant's last words are what its failure says: kept
+            // beside its working folder, where the logs page takes them.
+            let log = home.join("stderr.log");
+            let file = fs::OpenOptions::new().create(true).write(true).truncate(true).open(&log)
+                .with_context(|| format!("open {}", log.display()))?;
+            file.into()
+        })
         .spawn()
         .with_context(|| format!("start {}", cfg.supplicant))?;
     let until = Instant::now() + SOCKET_WAIT;
