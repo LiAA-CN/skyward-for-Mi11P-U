@@ -652,7 +652,12 @@ fn hung(name: &str) -> Result<Option<PathBuf>> {
     for line in mounts.lines() {
         let mut fields = line.split_whitespace();
         let (Some(source), Some(at)) = (fields.next(), fields.next()) else { continue };
-        let ends = Path::new(source).file_name().is_some_and(|f| f == name);
+        // The partition may be one of a slot pair, whose name the source
+        // ends in with the slot's suffix after it.
+        let ends = Path::new(source).file_name().is_some_and(|f| {
+            let f = f.to_string_lossy();
+            f == name || f.strip_suffix("_a").is_some_and(|s| s == name) || f.strip_suffix("_b").is_some_and(|s| s == name)
+        });
         if ends {
             return Ok(Some(PathBuf::from(at)));
         }
