@@ -643,6 +643,23 @@ fn bring_up(cfg: &Config, modules: &[PathBuf]) -> Result<()> {
     iface::set_up(&cfg.interface, true)
 }
 
+/// Where the partition `name` hangs already, if it hangs anywhere: its
+/// mount point from /proc/mounts, whose sources end in the partition's
+/// name, as the paths under /dev/block/by-name and
+/// /dev/block/bootdevice/by-name both do.
+fn hung(name: &str) -> Result<Option<PathBuf>> {
+    let mounts = fs::read_to_string("/proc/mounts").context("read /proc/mounts")?;
+    for line in mounts.lines() {
+        let mut fields = line.split_whitespace();
+        let (Some(source), Some(at)) = (fields.next(), fields.next()) else { continue };
+        let ends = Path::new(source).file_name().is_some_and(|f| f == name);
+        if ends {
+            return Ok(Some(PathBuf::from(at)));
+        }
+    }
+    Ok(None)
+}
+
 /// Put a file the driver asks for where the firmware loader looks. One the
 /// phone may be without is passed over where the phone has none, and the
 /// loader then tells the driver so, as it does in the phone's own system.
@@ -658,11 +675,21 @@ fn place(file: &Firmware) -> Result<()> {
     let bytes = match &file.partition {
         None => held(Path::new(&file.path)).with_context(|| format!("read {}", file.path))?,
         Some(partition) => {
-            let at = Path::new(PARTITIONS).join(partition);
-            fs::create_dir_all(&at).with_context(|| format!("make {}", at.display()))?;
-            skyward_block::mount::mount_ro(&Path::new(skyward_block::BY_NAME).join(partition), &at)?;
-            let read = held(&at.join(&file.path)).with_context(|| format!("read {} on {partition}", file.path));
-            skyward_block::mount::umount(&at)?;
+            // The first stage of the boot may have mounted it already, as
+            // the Mi 11 Ultra's does its persist: a device that hangs
+            // somewhere mounts no second time, so wherever it hangs is
+            // read as it is.
+            let read = match hung(partition)? {
+                Some(at) => held(&at.join(&file.path)).with_context(|| format!("read {} on {partition}", file.path)),
+                None => {
+                    let at = Path::new(PARTITIONS).join(partition);
+                    fs::create_dir_all(&at).with_context(|| format!("make {}", at.display()))?;
+                    skyward_block::mount::mount_ro(&Path::new(skyward_block::BY_NAME).join(partition), &at)?;
+                    let read = held(&at.join(&file.path)).with_context(|| format!("read {} on {partition}", file.path));
+                    skyward_block::mount::umount(&at)?;
+                    read
+                }
+            };
             read?
         }
     };
