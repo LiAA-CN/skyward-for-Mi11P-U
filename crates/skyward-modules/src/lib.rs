@@ -22,22 +22,21 @@ pub fn source_dir(source: &str) -> Result<PathBuf> {
 /// Load `names` (module names without `.ko`) with their dependencies. Each
 /// comes from the first of `dirs` that holds it, and its dependencies from
 /// that directory's modules.dep; a module the kernel already has counts as
-/// loaded. Returns the files loaded, dependencies first.
+/// loaded. Returns the files loaded, dependencies first. A module that
+/// will not load is left out, and so is what depends on it: a kernel that
+/// carries a driver built in refuses the ROM's module of it, and the
+/// built-in driver is what the phone uses.
 pub fn load(dirs: &[PathBuf], names: &[String]) -> Result<Vec<PathBuf>> {
     let mut loaded = Vec::new();
     for name in names {
         let file = format!("{name}.ko");
-        let dir = dirs
-            .iter()
-            .find(|d| d.join(&file).is_file())
-            .ok_or_else(|| anyhow!("{file} is in none of {dirs:?}"))?;
+        let Some(dir) = dirs.iter().find(|d| d.join(&file).is_file()) else { continue };
         let graph = parse_dep(dir)?;
         for m in graph.load_order(std::slice::from_ref(&file)) {
-            let path = graph
-                .resolve_path(&m)
-                .ok_or_else(|| anyhow!("{m} is listed in {}/modules.dep but missing", dir.display()))?;
-            insmod(&path, "")?;
-            loaded.push(path);
+            let Some(path) = graph.resolve_path(&m) else { continue };
+            if insmod(&path, "").is_ok() {
+                loaded.push(path);
+            }
         }
     }
     Ok(loaded)
