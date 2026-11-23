@@ -78,7 +78,12 @@ firmware = [
     { name = "m3.bin", partition = "modem", path = "image/m3.bin" },
 ]
 interface = "wlan0"
-supplicant = "/vendor/bin/hw/wpa_supplicant"
+# The WLAN's supplicant of the system's own bundle: the one the vendor
+# partition carries is built against a vendor interface this ROM does not
+# carry the libraries of, and the system's own is self-contained, so it is
+# what the recovery runs. Every system of Android 11 and later carries the
+# bundle, so this is what every ROM of the phone uses.
+supplicant = "/apex/com.android.wifi/bin/wpa_supplicant_mainline"
 libraries = ["/vendor/lib64", "/system/lib64"]
 service = "android.hardware.wifi.supplicant.ISupplicant/default"
 probe = "http://connect.rom.miui.com/generate_204"

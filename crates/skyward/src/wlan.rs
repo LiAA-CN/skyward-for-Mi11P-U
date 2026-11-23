@@ -3,7 +3,7 @@
 //! address asked for over DHCP and kept. The screen is told how things
 //! stand each time that changes.
 
-use anyhow::{bail, ensure, Context, Result};
+use anyhow::{anyhow, bail, ensure, Context, Result};
 use skyward_config::{Firmware, Wlan as Config};
 use skyward_net::dhcp::{self, Kept, Lease};
 use skyward_net::http::Servers;
@@ -722,6 +722,14 @@ fn start_supplicant(cfg: &Config, libraries: Option<&Path>) -> Result<Child> {
         fs::remove_file(&socket).with_context(|| format!("take away {}", socket.display()))?;
     }
     let mut path: Vec<String> = cfg.libraries.clone();
+    // A supplicant of the system's own bundle runs from where the bundle
+    // hangs, and takes the libraries the bundle carries beside it.
+    if let Some(name) = cfg.supplicant.strip_prefix("/apex/").and_then(|rest| rest.split('/').next()) {
+        match crate::secure::bundle_mounted(name)? {
+            Some(at) => path.push(at.join("lib64").to_string_lossy().into_owned()),
+            None => return Err(anyhow!("the bundle of {} is in none of the system's folders", name)),
+        }
+    }
     if let Some(dir) = libraries {
         path.push(dir.to_string_lossy().into_owned());
     }

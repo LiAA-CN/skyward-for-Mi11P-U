@@ -11,6 +11,10 @@ use std::time::{Duration, Instant};
 /// Where a phone keeps the bundles of shared libraries its own partitions
 /// were built against.
 const BUNDLE_DIRS: [&str; 4] = ["/mnt/system_ext/apex", "/mnt/system/system/apex", "/mnt/product/apex", "/vendor/apex"];
+/// A compressed bundle holds the plain one under this name.
+const ORIGINAL: &str = "original_apex";
+/// Where a plain bundle taken out of a compressed one goes.
+const UNPACKED: &str = "/skyward/run/apex";
 
 /// The file inside a bundle that holds its filesystem. It is stored whole,
 /// so the bundle can be opened where it lies.
@@ -171,14 +175,57 @@ fn bundle(name: &str) -> Result<Option<PathBuf>> {
     if skyward_block::mount::is_mount_point(&at)? {
         return Ok(Some(at));
     }
-    let Some(file) = BUNDLE_DIRS.iter().map(|d| Path::new(d).join(format!("{name}.apex"))).find(|p| p.is_file()) else {
+    let Some((file, compressed)) = bundle_file(name) else {
         return Ok(None);
     };
+    // A compressed bundle holds the plain one as its original_apex, taken
+    // out beside the others, for the plain bundle inside it opens where it
+    // lies.
+    let file = if compressed { unpack_original(&file, name)? } else { file };
     let (offset, length) = image(&file)?;
     let device = skyward_block::loopdev::attach(&file, offset, length)?;
     fs::create_dir_all(&at).with_context(|| format!("make {}", at.display()))?;
     skyward_block::mount::mount_ro(&device, &at)?;
     Ok(Some(at))
+}
+
+/// The bundle of `name` as one of the bundle folders holds it: a plain
+/// `.apex`, or a compressed one (a `.capex`) beside it.
+fn bundle_file(name: &str) -> Option<(PathBuf, bool)> {
+    for dir in BUNDLE_DIRS {
+        let apex = Path::new(dir).join(format!("{name}.apex"));
+        if apex.is_file() {
+            return Some((apex, false));
+        }
+        let capex = Path::new(dir).join(format!("{name}.capex"));
+        if capex.is_file() {
+            return Some((capex, true));
+        }
+    }
+    None
+}
+
+/// Take the plain bundle out of a compressed one, where the plain bundles
+/// of the others lie, so the one inside it opens where it lies.
+fn unpack_original(capex: &Path, name: &str) -> Result<PathBuf> {
+    let mut bundle = zip::ZipArchive::new(fs::File::open(capex).with_context(|| format!("open {}", capex.display()))?)
+        .with_context(|| format!("read what is in {}", capex.display()))?;
+    let mut original = bundle
+        .by_name(ORIGINAL)
+        .with_context(|| format!("{} holds no {ORIGINAL}", capex.display()))?;
+    let at = Path::new(UNPACKED).join(format!("{name}.apex"));
+    fs::create_dir_all(at.parent().expect("the unpacked bundles are in a folder").to_path_buf())
+        .with_context(|| format!("make {}", UNPACKED))?;
+    let mut out = fs::File::create(&at).with_context(|| format!("create {}", at.display()))?;
+    std::io::copy(&mut original, &mut out).with_context(|| format!("take {ORIGINAL} out of {}", capex.display()))?;
+    Ok(at)
+}
+
+/// Mount the bundle `name`, wherever one of the folders holds it, for a
+/// program of the phone's own that the recovery runs from a bundle, such
+/// as the WLAN's supplicant of the system's own.
+pub fn bundle_mounted(name: &str) -> Result<Option<PathBuf>> {
+    bundle(name)
 }
 
 /// Where the filesystem lies inside a bundle.
