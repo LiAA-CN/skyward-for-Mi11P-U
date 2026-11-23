@@ -85,8 +85,7 @@ struct Panel {
 }
 
 impl Panel {
-    fn new(path: PathBuf, dev: RawDevice) -> Result<Self> {
-        let mut x_range = None;
+    fn new(path: PathBuf, dev: RawDevice) -> Result<Self> {        let mut x_range = None;
         let mut y_range = None;
         let mut slots = 1;
         for (axis, info) in dev.get_absinfo().context("read touch axis ranges")? {
@@ -176,6 +175,29 @@ impl Panel {
     }
 }
 
+/// How far a touch panel's reaches span, as one number: the area its
+/// largest slot covers. The main display's is far more than a second
+/// display's, whose touch the phone carries for its own small screen, as
+/// the Mi 11 Ultra's rear display has.
+fn reach(dev: &evdev::raw_stream::RawDevice) -> u64 {
+    let mut reach = 0;
+    if let Ok(axes) = dev.get_absinfo() {
+        let mut x = None;
+        let mut y = None;
+        for (axis, info) in axes {
+            match axis {
+                AbsoluteAxisCode::ABS_MT_POSITION_X => x = Some(info.maximum() as u64),
+                AbsoluteAxisCode::ABS_MT_POSITION_Y => y = Some(info.maximum() as u64),
+                _ => {}
+            }
+        }
+        if let (Some(x), Some(y)) = (x, y) {
+            reach = x * y;
+        }
+    }
+    reach
+}
+
 /// The touchscreen and the hardware buttons. /dev/input is watched, so a
 /// device that shows up later, such as a touch panel whose driver module
 /// loads after the UI starts, is picked up when it appears.
@@ -225,11 +247,15 @@ impl Inputs {
         Ok(inputs)
     }
 
-    /// Take in the devices under /dev/input not seen before: the first
-    /// direct multitouch device as the panel, and every device with a
-    /// power, volume or back key as buttons. A panel taken in is told what
-    /// the device description writes to the touchscreen.
+    /// Take in the devices under /dev/input not seen before: the touch
+    /// panel and every device with a power, volume or back key as buttons.
+    /// A panel taken in is told what the device description writes to the
+    /// touchscreen. A phone may carry two touch panels, the second
+    /// display's own being one, as the Mi 11 Ultra's rear display has:
+    /// the panel whose reaches span the most is the one the recovery
+    /// shows on.
     fn scan(&mut self) -> Result<()> {
+        let mut panels: Vec<(PathBuf, RawDevice, u64)> = Vec::new();
         for (path, dev) in evdev::raw_stream::enumerate() {
             if !self.seen.insert(path.clone()) {
                 continue;
@@ -240,17 +266,21 @@ impl Inputs {
                 .is_some_and(|a| a.contains(AbsoluteAxisCode::ABS_MT_POSITION_X) && a.contains(AbsoluteAxisCode::ABS_MT_POSITION_Y));
             let keys = dev.supported_keys().is_some_and(|k| KEYS.iter().any(|c| k.contains(*c)));
             eprintln!("input {}: {:?} direct={direct} multitouch={mt} keys={keys}", path.display(), dev.name().unwrap_or("?"));
-            if direct && mt && self.panel.is_none() {
-                self.wakeful.add(dev.as_raw_fd())?;
-                self.panel = Some(Panel::new(path, dev)?);
-                for w in &self.touch_writes {
-                    fs::write(&w.path, &w.value).with_context(|| format!("write {} to {}", w.value, w.path))?;
-                    skyward_sys::kmsg(&format!("wrote {} to {} for the touchscreen", w.value, w.path))?;
-                }
+            if direct && mt {
+                let area = reach(&dev);
+                panels.push((path, dev, area));
             } else if keys {
                 set_nonblocking(dev.as_raw_fd()).context("make buttons non-blocking")?;
                 self.wakeful.add(dev.as_raw_fd())?;
                 self.buttons.push((path, dev));
+            }
+        }
+        if let Some((path, dev, _)) = panels.into_iter().max_by_key(|(_, _, area)| *area) {
+            self.wakeful.add(dev.as_raw_fd())?;
+            self.panel = Some(Panel::new(path, dev)?);
+            for w in &self.touch_writes {
+                fs::write(&w.path, &w.value).with_context(|| format!("write {} to {}", w.value, w.path))?;
+                skyward_sys::kmsg(&format!("wrote {} to {} for the touchscreen", w.value, w.path))?;
             }
         }
         Ok(())
