@@ -275,19 +275,47 @@ pub fn publish_descriptions(wanted: &[String]) -> Result<()> {
     fs::write(&to, skyward_programs::description::offering(&untold)?).with_context(|| format!("write {}", to.display()))?;
     fs::set_permissions(&to, std::os::unix::fs::PermissionsExt::from_mode(0o644)).with_context(|| format!("let every user read {}", to.display()))?;
     let rewritten = say_framework(into)?;
-    // The directory reads the descriptions once and keeps to them, so one
+    /// Whether any of `wanted` is unknown to the directory: it knows every
+/// name when it has read what the recovery describes, and the first one
+/// it does not know settles that it starts again.
+fn described(binder: &skyward_binder::driver::Binder, wanted: &[String]) -> Result<bool> {
+    for name in wanted {
+        if !skyward_binder::service::declared(binder, name).with_context(|| format!("ask the service directory whether it knows {name} described"))? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+// The directory reads the descriptions once and keeps to them, so one
     // that read them before these were written has to start again to see
     // these. One an earlier run of the recovery service had start again
     // knows them already, and is left with what has registered with it
     // since.
     let binder = skyward_binder::driver::Binder::open()?;
     // The first it does not know described settles that it starts again.
+    // The directory may not be answering yet when the recovery comes to
+    // it, its own start being under way still, so what it answers is
+    // asked a few times over before the asking gives up.
     let mut unknown = false;
-    for name in wanted {
-        if !skyward_binder::service::declared(&binder, name).with_context(|| format!("ask the service directory whether it knows {name} described"))? {
-            unknown = true;
-            break;
+    let mut last = None;
+    for attempt in 0..10 {
+        match described(&binder, wanted) {
+            Ok(known) => {
+                unknown = known;
+                last = None;
+                break;
+            }
+            Err(e) => {
+                last = Some(e);
+                if attempt < 9 {
+                    std::thread::sleep(std::time::Duration::from_millis(400));
+                }
+            }
         }
+    }
+    if let Some(e) = last {
+        return Err(e);
     }
     if unknown || rewritten > 0 {
         // It comes back knowing nothing of what had registered with it,
