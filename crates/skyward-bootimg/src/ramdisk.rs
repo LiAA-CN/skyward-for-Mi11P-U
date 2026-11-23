@@ -183,7 +183,13 @@ impl Ramdisk {
                 e.data = target.as_bytes().to_vec();
                 Ok(())
             }
-            Some(_) => bail!("{name} is in the ramdisk and is not a link"),
+            // A ROM's ramdisk may carry the command as a program of its
+            // own, as a TWRP-built one does: the recovery binary the link
+            // names runs each of the commands, and it takes its place.
+            Some(_) => {
+                self.entries.retain(|e| e.name != name);
+                self.insert(name, S_IFLNK | LINK_MODE, target.as_bytes().to_vec())
+            }
             None => self.insert(name, S_IFLNK | LINK_MODE, target.as_bytes().to_vec()),
         }
     }
