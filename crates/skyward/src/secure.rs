@@ -314,8 +314,13 @@ fn described(binder: &skyward_binder::driver::Binder, wanted: &[String]) -> Resu
             }
         }
     }
-    if let Some(e) = last {
-        return Err(e);
+    if let Some(e) = &last {
+        // The directory answers nothing sensible, as one of an older
+        // Android does when the recovery asks with the numbering a newer
+        // one keeps: it starts again, and one that starts reads what the
+        // recovery describes.
+        skyward_sys::kmsg(&format!("the service directory answered nothing sensible: {e:#}"))?;
+        unknown = true;
     }
     if unknown || rewritten > 0 {
         // It comes back knowing nothing of what had registered with it,
