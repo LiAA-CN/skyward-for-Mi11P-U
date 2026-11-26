@@ -211,12 +211,15 @@ pub struct Inputs {
     seen: HashSet<PathBuf>,
     /// What the touchscreen is told each time its panel is taken in.
     touch_writes: Vec<Write>,
+    /// Which touch panel the configuration wants, by the name its driver
+    /// gives the input device. None takes the widest-reaching one.
+    wanted: Option<String>,
     w: f32,
     h: f32,
 }
 
 impl Inputs {
-    pub fn open(w: u32, h: u32, touch_writes: Vec<Write>) -> Result<Self> {
+    pub fn open(w: u32, h: u32, touch_writes: Vec<Write>, wanted: Option<String>) -> Result<Self> {
         let fd = unsafe { libc::inotify_init1(libc::IN_NONBLOCK | libc::IN_CLOEXEC) };
         if fd < 0 {
             return Err(io::Error::last_os_error()).context("create inotify instance");
@@ -237,6 +240,7 @@ impl Inputs {
             buttons: Vec::new(),
             seen: HashSet::new(),
             touch_writes,
+            wanted,
             w: w as f32,
             h: h as f32,
         };
@@ -255,7 +259,7 @@ impl Inputs {
     /// the panel whose reaches span the most is the one the recovery
     /// shows on.
     fn scan(&mut self) -> Result<()> {
-        let mut panels: Vec<(PathBuf, RawDevice, u64)> = Vec::new();
+        let mut panels: Vec<(PathBuf, RawDevice, u64, bool)> = Vec::new();
         for (path, dev) in evdev::raw_stream::enumerate() {
             if !self.seen.insert(path.clone()) {
                 continue;
@@ -267,15 +271,30 @@ impl Inputs {
             let keys = dev.supported_keys().is_some_and(|k| KEYS.iter().any(|c| k.contains(*c)));
             eprintln!("input {}: {:?} direct={direct} multitouch={mt} keys={keys}", path.display(), dev.name().unwrap_or("?"));
             if direct && mt {
+                // The configuration may name its panel: the one whose
+                // driver names the input device so. None names the widest
+                // reach, which is the main display's.
+                let name = dev.name().unwrap_or("");
+                let matched = self.wanted.as_deref().is_some_and(|wanted| name.contains(wanted));
                 let area = reach(&dev);
-                panels.push((path, dev, area));
+                panels.push((path, dev, area, matched));
             } else if keys {
                 set_nonblocking(dev.as_raw_fd()).context("make buttons non-blocking")?;
                 self.wakeful.add(dev.as_raw_fd())?;
                 self.buttons.push((path, dev));
             }
         }
-        if let Some((path, dev, _)) = panels.into_iter().max_by_key(|(_, _, area)| *area) {
+        let pick = panels
+            .iter()
+            .find(|(_, _, _, matched)| *matched)
+            .map(|(path, _, _, _)| path.clone())
+            .or_else(|| {
+                panels
+                    .iter()
+                    .max_by_key(|(_, _, area, _)| *area)
+                    .map(|(path, _, _, _)| path.clone())
+            });
+        if let Some((path, dev, _, _)) = panels.into_iter().find(|(path, ..)| Some(path) == pick.as_ref()) {
             self.wakeful.add(dev.as_raw_fd())?;
             self.panel = Some(Panel::new(path, dev)?);
             for w in &self.touch_writes {

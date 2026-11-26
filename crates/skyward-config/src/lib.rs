@@ -301,6 +301,13 @@ pub struct Display {
     /// sliding over another rounds its leading corners to it.
     #[serde(default)]
     pub corner_radius: u32,
+    /// Which touch panel drives the UI, by the name its driver gives the
+    /// input device: a phone may carry two, the second display's own
+    /// beside the main one, as the Mi 11 Ultra's rear display has, and
+    /// either may be wanted. None takes the panel whose reaches span the
+    /// most, which is the main display's.
+    #[serde(default)]
+    pub touch_panel: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

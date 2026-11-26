@@ -11,6 +11,8 @@ width = 1440
 height = 3200
 density = 560
 diagonal = 6.81
+# The rear display's own touch, driving the UI the main screen shows.
+touch_panel = "cyttsp5_mt"
 
 [modules]
 # The phone keeps its modules in the vendor partition: it has no
